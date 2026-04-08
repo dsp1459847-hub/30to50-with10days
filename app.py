@@ -5,8 +5,8 @@ from collections import Counter
 import datetime
 import io
 
-# --- 1. जीरो-पॉइंट रिकवरी इंजन (v50) ---
-def get_v50_zero_point_logic(df, s_name, target_date):
+# --- 1. डीप-ग्रेव रिकवरी इंजन (v51) ---
+def get_v51_deep_recovery(df, s_name, target_date):
     try:
         df_clean = df.iloc[:, [1, df.columns.get_loc(s_name)]].copy()
         df_clean.columns = ['DATE', 'NUM']
@@ -14,56 +14,54 @@ def get_v50_zero_point_logic(df, s_name, target_date):
         df_clean['NUM'] = pd.to_numeric(df_clean['NUM'], errors='coerce')
         df_clean = df_clean.dropna(subset=['DATE', 'NUM'])
 
-        # पिछले 15 दिनों का डेटा (Outlier ढूंढने के लिए)
-        recent_all = df_clean[df_clean['DATE'] < target_date].tail(90)
+        # डेटा पुल (पिछले 120 रिकॉर्ड्स - करीब 20 दिन)
+        recent_all = df_clean[df_clean['DATE'] < target_date].tail(120)
         all_vals = recent_all['NUM'].astype(int).tolist()
         
         if len(all_vals) < 10: return "Data Kam", "N/A", []
 
         scores = Counter()
-
-        # 🎯 स्ट्रैटेजी 1: 'कोल्ड नंबर' (The Hidden Numbers)
-        # 30 के फेलियर के बाद अक्सर वो नंबर आते हैं जो पिछले 15 दिनों से गायब थे
-        full_range = set(range(100))
-        appeared_recently = set(all_vals[-60:]) # पिछले 10 दिन के नंबर
-        hidden_nums = list(full_range - appeared_recently)
-        
-        for n in hidden_nums:
-            scores[n] += 100 # गायब नंबरों को सबसे ज्यादा वजन
-
-        # 🎯 स्ट्रैटेजी 2: 'हरूफ बैलेंस' (Haruf Balancing)
-        # वो हरूफ़ (0-9) जो पिछले 3 दिन में नहीं दिखे
-        last_20_digits = [d for n in all_vals[-20:] for d in [n//10, n%10]]
-        digit_counts = Counter(last_20_digits)
-        weak_digits = [d for d in range(10) if digit_counts[d] <= 1]
-        
-        for d in weak_digits:
-            for i in range(10):
-                scores[d*10 + i] += 50
-                scores[i*10 + d] += 50
-
-        # 🎯 स्ट्रैटेजी 3: 'कल की काट' (Immediate Mirror)
         last_val = all_vals[-1]
-        r = lambda x: (x + 5) % 10
-        m1 = (r(last_val//10)*10) + (last_val%10)
-        m2 = (last_val//10*10) + r(last_val%10)
-        scores[m1] += 80
-        scores[m2] += 80
 
-        # टॉप 10 चयन (Prioritize Hidden + Weak Digits)
+        # 🎯 पैटर्न 1: 'मरे हुए नंबर' (Dead Numbers)
+        # 42 के फेलियर के बाद वो नंबर आते हैं जो पिछले 20 दिनों से 'मरे' हुए थे
+        appeared_20_days = set(all_vals)
+        dead_nums = list(set(range(100)) - appeared_20_days)
+        for n in dead_nums:
+            scores[n] += 120 # सबसे ज्यादा प्राथमिकता
+
+        # 🎯 पैटर्न 2: 'राशि का तिरछा जंप' (Mirror-Diagonal Jump)
+        # पिछले नंबर की दहाई की राशि और इकाई का सेम अंक या उल्टा
+        r = lambda x: (x + 5) % 10
+        d, e = last_val // 10, last_val % 10
+        diagonal_nums = [(r(d)*10)+e, (d*10)+r(e), (e*10)+d, (r(e)*10)+r(d)]
+        for n in diagonal_nums:
+            scores[n] += 100
+
+        # 🎯 पैटर्न 3: 'अंकों की लुका-छिपी' (Missing Haruf)
+        # वो 3 अंक जो पिछले 50 नतीजों में सबसे कम दिखे हैं
+        digit_counts = Counter([d for n in all_vals[-50:] for d in [n//10, n%10]])
+        weakest_digits = [d for d, c in sorted(digit_counts.items(), key=lambda x: x[1])[:3]]
+        
+        for d in weakest_digits:
+            for i in range(10):
+                scores[d*10 + i] += 60
+                scores[i*10 + d] += 60
+
+        # टॉप 10 चयन (Prioritize Dead + Diagonal)
         final_list = [n for n, s in scores.most_common(10)]
         top_10_str = ", ".join([f"{n:02d}" for n in sorted(final_list)])
         
-        analysis = f"कमज़ोर अंक: {weak_digits} | फोकस: हिडन नंबर्स (Cold)"
+        analysis = f"डेड डिजिट्स सक्रिय | कमज़ोर हरुफ़: {weakest_digits}"
         
         return analysis, top_10_str, final_list
     except:
-        return "Resetting Logic..", "N/A", []
+        return "Deep Scanning..", "N/A", []
 
 # --- 2. UI डैशबोर्ड ---
-st.set_page_config(page_title="MAYA AI v50 Reset", layout="wide")
-st.title("🛡️ MAYA AI: v50 Zero-Point Recovery")
-st.markdown("### 30/0 फेलियर के बाद का 'महा-बदलाव' इंजन")
+st.set_page_config(page_title="MAYA AI v51 Deep Recovery", layout="wide")
+st.title("🛡️ MAYA AI: v51 Deep-Grave Recovery Engine")
+st.markdown("### 42/1 के भारी फेलियर को रिकवर करने का अंतिम प्रहार")
 
 uploaded_file = st.file_uploader("📂 अपनी Excel फ़ाइल अपलोड करें", type=['xlsx'])
 
@@ -75,14 +73,14 @@ if uploaded_file:
         
         target_date = st.date_input("📅 तारीख चुनें:", df_match['DATE_COL'].dropna().max())
         
-        if st.button("🚀 जीरो-पॉइंट स्कैन रन करें"):
+        if st.button("🚀 डीप रिकवरी स्कैन रन करें"):
             shift_cols = ['DS', 'FD', 'GD', 'GL', 'DB', 'SG']
             selected_row = df_match[df_match['DATE_COL'] == target_date]
             
             report = []
             for s in shift_cols:
                 if s not in df.columns: continue
-                info, picks, raw_list = get_v50_zero_point_logic(df_match, s, target_date)
+                info, picks, raw_list = get_v51_deep_recovery(df_match, s, target_date)
                 
                 actual = "--"
                 res_emoji = "⚪"
@@ -96,7 +94,7 @@ if uploaded_file:
                 report.append({"शिफ्ट": s, "असली नतीजा": actual, "परिणाम": res_emoji, "एनालिसिस": info, "टॉप 10 रिकवरी अंक": picks})
             
             st.table(pd.DataFrame(report))
-            st.warning("🔄 **सिस्टम रिसेट:** जब पुराना पैटर्न 100% फेल होता है, तो गेम 'Hidden Frequency' पर चला जाता है। यह कोड उन्हीं नंबरों को पकड़ रहा है जो बहुत दिनों से नहीं आए।")
+            st.warning("🚨 **रिकवरी मोड:** जब गेम 98% फेल होता है, तो वह उन नंबरों को निकालता है जो 'आउट ऑफ चार्ट' हो चुके होते हैं। v51 उन्हीं सोए हुए नंबरों को टारगेट कर रहा है।")
             st.balloons()
     except Exception as e:
         st.error(f"Error: {e}")
