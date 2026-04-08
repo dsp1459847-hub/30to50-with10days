@@ -5,8 +5,8 @@ from collections import Counter
 import datetime
 import io
 
-# --- 1. हाइब्रिड मैचिंग इंजन (v46) ---
-def get_v46_hybrid_logic(df, s_name, target_date):
+# --- 1. अडैप्टिव पैटर्न करेक्टर (v47) ---
+def get_v47_adaptive_logic(df, s_name, target_date):
     try:
         df_clean = df.iloc[:, [1, df.columns.get_loc(s_name)]].copy()
         df_clean.columns = ['DATE', 'NUM']
@@ -14,72 +14,58 @@ def get_v46_hybrid_logic(df, s_name, target_date):
         df_clean['NUM'] = pd.to_numeric(df_clean['NUM'], errors='coerce')
         df_clean = df_clean.dropna(subset=['DATE', 'NUM'])
 
-        all_vals = df_clean[df_clean['DATE'] < target_date]['NUM'].astype(int).tolist()
-        if len(all_vals) < 50: return "Data Kam", "N/A", []
-
-        # --- A. दहाई और इकाई (Digit Mapping) लॉजिक ---
-        last_v = all_vals[-1]
-        d_last, e_last = last_v // 10, last_v % 10
+        # पिछले 5 दिनों का डेटा (पैटर्न समझने के लिए)
+        recent_data = df_clean[df_clean['DATE'] < target_date].tail(30)
+        all_vals = recent_data['NUM'].astype(int).tolist()
         
-        # आपकी थ्योरी के अनुसार डिजिट ट्रांजिशन
-        mapping = {3:[0,5,8,9], 0:[8,9,5], 1:[6,2,7], 2:[7,3,8], 4:[9,0,5], 
-                   5:[0,1,6], 6:[1,2,7], 7:[2,3,8], 8:[3,4,9], 9:[4,5,0]}
-        
-        target_d = [(d_last + 5) % 10, d_last] # राशि और सेम दहाई
-        target_e = mapping.get(e_last, [(e_last + 5) % 10]) # आपकी मैपिंग या राशि
-        
-        digit_theory_nums = []
-        for d in target_d:
-            for e in target_e:
-                digit_theory_nums.append(d * 10 + e)
+        if len(all_vals) < 5: return "Data Kam", "N/A", []
 
-        # --- B. 25-30% वाला सक्सेस इंजन (Historical Scoring) ---
-        hist_scores = Counter()
-        # 1. तारीख का इतिहास (Legacy)
-        d_m = (target_date.day, target_date.month)
-        legacy = df_clean[df_clean['DATE'].apply(lambda x: (x.day, x.month) == d_m and x < target_date)]['NUM'].tolist()
-        for n in legacy: hist_scores[n] += 50
+        # A. फेलियर का कारण ढूंढना (Self-Correction)
+        # क्या गेम Repeat हो रहा है या Neighbor चल रहा है?
+        last_3 = all_vals[-3:]
+        is_repeat_heavy = any(all_vals.count(x) > 1 for x in last_3)
+        is_neighbor_heavy = any(abs(all_vals[i] - all_vals[i-1]) <= 2 for i in range(-1, -4, -1))
+
+        # B. डायनामिक डिजिट मैपिंग (इतिहास के बजाय 'अभी' की चाल)
+        digit_map = {i: [] for i in range(10)}
+        for i in range(len(all_vals)-1):
+            digit_map[all_vals[i]%10].append(all_vals[i+1]%10)
         
-        # 2. ताज़ा रोटेशन (Last 100 days)
-        for n in all_vals[-100:]: hist_scores[n] += 10
+        last_val = all_vals[-1]
+        last_e = last_val % 10
+        # ताज़ा ट्रेंड के अनुसार अगले अंक
+        next_digits = [d for d, c in Counter(digit_map.get(last_e, [])).most_common(4)]
+        if not next_digits: next_digits = [(last_e + 5)%10, (last_e + 1)%10]
 
-        # --- C. क्रॉस-मैचिंग (Final Result) ---
-        final_candidate_scores = {}
-        for n in range(100):
-            score = 0
-            # अगर नंबर 'अंक थ्योरी' में है तो भारी बोनस
-            if n in digit_theory_nums: score += 100
-            # अगर नंबर 'इतिहास के स्कोर' में है तो स्कोर जोड़ो
-            score += hist_scores.get(n, 0)
-            
-            # ए/बी पार्टीशन फिल्टर (0-49 या 50-99)
-            last_g = "A" if last_v <= 49 else "B"
-            curr_g = "A" if n <= 49 else "B"
-            if last_g != curr_g: score += 20 # अक्सर ग्रुप बदलता है
-            
-            if score > 0:
-                final_candidate_scores[n] = score
+        # C. नंबरों का निर्माण (Scoring Matrix)
+        scores = Counter()
+        for d in next_digits:
+            for i in range(10):
+                # दहाई फिक्स करके इकाई बदलना या उल्टा
+                n1, n2 = (last_val//10)*10 + d, d*10 + (last_val%10)
+                scores[n1] += 50
+                scores[n2] += 50
 
-        # टॉप 10 का चुनाव
-        final_picks = [n for n, s in sorted(final_candidate_scores.items(), key=lambda x: x[1], reverse=True)[:10]]
-        
-        # बैकअप (अगर 10 से कम हों)
-        if len(final_picks) < 10:
-            for n in digit_theory_nums:
-                if n not in final_picks: final_picks.append(n)
-                if len(final_picks) >= 10: break
+        # D. एक्स्ट्रा बैकअप (अगर गेम राशि पर जा रहा है)
+        r = lambda x: (x + 5) % 10
+        family = [last_val, (r(last_val//10)*10)+(last_val%10), (last_val//10*10)+r(last_val%10)]
+        for f in family: scores[f] += 40
 
+        # टॉप 10 चयन
+        final_picks = [n for n, s in scores.most_common(10)]
         top_10_str = ", ".join([f"{n:02d}" for n in sorted(final_picks)])
-        analysis = f"मैपिंग अंक: {target_d}x{target_e} | इतिहास मैच: सक्रिय"
+        
+        status = "Neighbor Trend" if is_neighbor_heavy else "Mapping Trend"
+        analysis = f"चाल: {status} | फोकस अंक: {next_digits}"
         
         return analysis, top_10_str, final_picks
     except:
-        return "Matching..", "N/A", []
+        return "Analyzing Failure..", "N/A", []
 
 # --- 2. UI डैशबोर्ड ---
-st.set_page_config(page_title="MAYA AI Hybrid v46", layout="wide")
-st.title("🛡️ MAYA AI: v46 Hybrid Matcher Engine")
-st.markdown("### अंकों की थ्योरी + 30% सक्सेस इंजन का महा-संगम")
+st.set_page_config(page_title="MAYA AI v47 Fix", layout="wide")
+st.title("🛡️ MAYA AI: v47 Pattern Corrector (Failure to Success)")
+st.markdown("### यह कोड फेल हुए नतीजों से 'अगली चाल' सीखता है")
 
 uploaded_file = st.file_uploader("📂 अपनी Excel फ़ाइल अपलोड करें", type=['xlsx'])
 
@@ -91,14 +77,14 @@ if uploaded_file:
         
         target_date = st.date_input("📅 तारीख चुनें:", df_match['DATE_COL'].dropna().max())
         
-        if st.button("🚀 हाइब्रिड मैचिंग रन करें"):
+        if st.button("🚀 फेलियर सुधार स्कैन शुरू करें"):
             shift_cols = ['DS', 'FD', 'GD', 'GL', 'DB', 'SG']
             selected_row = df_match[df_match['DATE_COL'] == target_date]
             
             report = []
             for s in shift_cols:
                 if s not in df.columns: continue
-                info, picks, raw_list = get_v46_hybrid_logic(df_match, s, target_date)
+                info, picks, raw_list = get_v47_adaptive_logic(df_match, s, target_date)
                 
                 actual = "--"
                 res_emoji = "⚪"
@@ -109,10 +95,11 @@ if uploaded_file:
                         res_emoji = "✅ PASS" if int(actual) in raw_list else "❌"
                     else: actual = v
 
-                report.append({"शिफ्ट": s, "असली नतीजा": actual, "परिणाम": res_emoji, "मैचिंग विश्लेषण": info, "टॉप 10 मैच": picks})
+                report.append({"शिफ्ट": s, "असली नतीजा": actual, "परिणाम": res_emoji, "फेलियर एनालिसिस": info, "टॉप 10 रिकवरी अंक": picks})
             
             st.table(pd.DataFrame(report))
-            st.success("✅ **रिजल्ट तैयार:** अब केवल वही नंबर आ रहे हैं जो अंकों की चाल और इतिहास के रिकॉर्ड दोनों में फिट बैठते हैं।")
+            st.warning("⚠️ **पैटर्न अलर्ट:** अगर लगातार ❌ दिख रहे हैं, तो इसका मतलब है गेम 'राशि की भी राशि' (Complex Mirror) पर चला गया है। यह v47 उसे पकड़ने की कोशिश कर रहा है।")
             st.balloons()
     except Exception as e:
         st.error(f"Error: {e}")
+        
