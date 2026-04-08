@@ -5,8 +5,8 @@ from collections import Counter
 import datetime
 import io
 
-# --- 1. v37 प्रोबेबिलिटी इंजन (Master Scoring) ---
-def get_v37_probability_picks(df, s_name, target_date, last_res):
+# --- 1. प्रोबेबिलिटी ट्रांजिशन इंजन (The Logic You Suggested) ---
+def get_probability_transition_picks(df, s_name, target_date):
     try:
         # डेटा क्लीनिंग
         df_clean = df.iloc[:, [1, df.columns.get_loc(s_name)]].copy()
@@ -15,51 +15,60 @@ def get_v37_probability_picks(df, s_name, target_date, last_res):
         df_clean['NUM'] = pd.to_numeric(df_clean['NUM'], errors='coerce')
         df_clean = df_clean.dropna(subset=['DATE', 'NUM'])
 
-        # स्कोरिंग बोर्ड
-        matrix = Counter()
+        if len(df_clean) < 365: return "Data Kam", "N/A", []
 
-        # 🎯 पैटर्न 1: 'हरूफ क्रॉस रोटेशन' (Weight: 100 pts)
-        # पिछले 30 दिनों के सबसे ताकतवर अंदर और बाहर के हरूफ
-        recent_30 = df_clean[df_clean['DATE'] < target_date].tail(30)['NUM'].astype(int).tolist()
-        if recent_30:
-            top_in = [n // 10 for n, c in Counter([x // 10 for x in recent_30]).most_common(4)]
-            top_out = [n % 10 for n, c in Counter([x % 10 for x in recent_30]).most_common(4)]
-            for n in [a*10+b for a in top_in for b in top_out]:
-                matrix[n] += 100
-
-        # 🎯 पैटर्न 2: 'शिफ्ट-चेन फैमिली' (Weight: 80 pts)
-        if last_res is not None:
-            r = lambda x: (x + 5) % 10
-            a, b = int(last_res) // 10, int(last_res) % 10
-            # फुल फैमिली (मिरर + पलटी)
-            fam = [int(last_res), (r(a)*10)+b, (a*10)+r(b), (r(a)*10)+r(b), (b*10)+a, (b*10)+r(a)]
-            for n in fam: matrix[n] += 80
-
-        # 🎯 पैटर्न 3: 'तारीख का जादू' (Weight: 60 pts)
-        d, m = target_date.day, target_date.month
-        legacy = df_clean[(df_clean['DATE'].apply(lambda x: x.day == d and x.month == m and x < target_date))]['NUM'].astype(int).tolist()
-        for n in legacy: matrix[n] += 60
-
-        # 🎯 पैटर्न 4: 'वार की हिस्ट्री' (Weight: 40 pts)
-        t_day_name = target_date.strftime('%A')
-        day_hist = df_clean[df_clean['DATE'].apply(lambda x: x.strftime('%A') == t_day_name and x < target_date)]['NUM'].astype(int).tolist()
-        for n, c in Counter(day_hist[-200:]).most_common(5): matrix[n] += 40
-
-        # टॉप 10 चयन
-        final_picks = [n for n, s in matrix.most_common(10)]
-        top_10_str = ", ".join([f"{n:02d}" for n in sorted(final_picks)])
+        # A. प्रोबेबिलिटी ग्रुप बनाना (1 साल का डेटा)
+        one_year_ago = target_date - datetime.timedelta(days=365)
+        hist_year = df_clean[(df_clean['DATE'] >= one_year_ago) & (df_clean['DATE'] < target_date)]
         
-        # टॉप 5 की संभावना (%)
-        top_5_probs = {f"{n:02d}": f"{min(58 + (matrix[n] // 4), 95)}%" for n in final_picks[:5]}
+        # नंबरों को उनकी फ्रीक्वेंसी के हिसाब से रैंक देना (0 to 99)
+        counts = Counter(hist_year['NUM'].astype(int))
+        sorted_nums = [n for n, c in sorted(counts.items(), key=lambda x: x[1], reverse=True)]
+        # जो नंबर नहीं आए उन्हें अंत में जोड़ना
+        for n in range(100):
+            if n not in sorted_nums: sorted_nums.append(n)
         
-        return " | ".join([f"{k}({v})" for k, v in top_5_probs.items()]), top_10_str, final_picks
-    except:
-        return "Analyzing Probability..", "N/A", []
+        # रैंक मैप (Number -> Rank)
+        rank_map = {val: i for i, val in enumerate(sorted_nums)}
+        # ग्रुप मैप (Rank 0-9 = Group 0, 10-19 = Group 1...)
+        group_nums = {g: sorted_nums[g*10 : (g+1)*10] for g in range(10)}
 
-# --- 2. UI और स्मार्ट डैशबोर्ड ---
-st.set_page_config(page_title="MAYA AI v37 Pro", layout="wide")
-st.title("🛡️ MAYA AI: v37 Probability Matrix (Target 80%)")
-st.markdown("### आपकी एक्सेल के 5 साल के डेटा का डीप एनालिसिस")
+        # B. ट्रांजिशन एनालिसिस (किसे बाद क्या आता है?)
+        # पिछले 200 दिनों की चाल देखना
+        transitions = []
+        recent_data = df_clean[df_clean['DATE'] < target_date].tail(200)
+        vals = recent_data['NUM'].astype(int).tolist()
+        for i in range(len(vals)-1):
+            g_curr = rank_map.get(vals[i], 99) // 10
+            g_next = rank_map.get(vals[i+1], 99) // 10
+            transitions.append((g_curr, g_next))
+        
+        # C. प्रेडिक्शन (आज के ग्रुप के आधार पर कल का ग्रुप)
+        last_val = vals[-1]
+        last_group = rank_map.get(last_val, 99) // 10
+        
+        # इस ग्रुप के बाद सबसे ज्यादा बार कौन सा ग्रुप आया?
+        following_groups = [next_g for curr_g, next_g in transitions if curr_g == last_group]
+        if not following_groups:
+            # अगर डेटा कम है तो सबसे हॉट ग्रुप (0) लें
+            target_group = 0
+        else:
+            target_group = Counter(following_groups).most_common(1)[0][0]
+
+        # D. फाइनल 10 अंक (उस ग्रुप के नंबर)
+        final_10 = group_nums.get(target_group, sorted_nums[:10])
+        top_10_str = ", ".join([f"{n:02d}" for n in sorted(final_10)])
+        
+        analysis = f"📊 पिछला नंबर: {last_val:02d} (ग्रुप {last_group}) -> अगला संभावित ग्रुप: {target_group}"
+        
+        return analysis, top_10_str, final_10
+    except Exception as e:
+        return f"Error: {e}", "N/A", []
+
+# --- 2. UI सेटअप ---
+st.set_page_config(page_title="MAYA AI Prob-Transition", layout="wide")
+st.title("🛡️ MAYA AI: Probability Transition Engine")
+st.markdown("### आपने जो लॉजिक बताया: 'ग्रुप के बाद ग्रुप' की चाल")
 
 uploaded_file = st.file_uploader("📂 अपनी Excel फ़ाइल अपलोड करें", type=['xlsx'])
 
@@ -71,23 +80,14 @@ if uploaded_file:
         
         target_date = st.date_input("📅 विश्लेषण की तारीख चुनें:", df_match['DATE_COL'].dropna().max())
         
-        if st.button("🚀 80% एक्यूरेसी स्कैन शुरू करें"):
+        if st.button("🚀 प्रोबेबिलिटी ट्रांजिशन स्कैन"):
             shift_cols = ['DS', 'FD', 'GD', 'GL', 'DB', 'SG']
             selected_row = df_match[df_match['DATE_COL'] == target_date]
             
             day_results = []
-            prev_val = None
-
-            # कल की आखिरी शिफ्ट (SG) का डेटा
-            y_date = target_date - datetime.timedelta(days=1)
-            y_row = df_match[df_match['DATE_COL'] == y_date]
-            if not y_row.empty:
-                try: prev_val = int(float(y_row['SG'].values[0]))
-                except: pass
-
             for s in shift_cols:
                 if s not in df.columns: continue
-                p_info, t_10, r_list = get_v37_probability_picks(df_match, s, target_date, prev_val)
+                info, t_10, r_list = get_probability_transition_picks(df_match, s, target_date)
                 
                 actual = "--"
                 res_emoji = "⚪"
@@ -96,15 +96,14 @@ if uploaded_file:
                         v = str(selected_row[s].values[0]).strip()
                         if v.replace('.','',1).isdigit():
                             actual = f"{int(float(v)):02d}"
-                            prev_val = int(actual)
                             res_emoji = "✅ PASS" if int(actual) in r_list else "❌"
                         else: actual = v
-                    except: actual = "--"
+                    except: pass
 
-                day_results.append({"शिफ्ट": s, "असली नतीजा": actual, "परिणाम": res_emoji, "संभावना (%)": p_info, "टॉप 10 अंक": t_10})
+                day_results.append({"शिफ्ट": s, "असली नतीजा": actual, "परिणाम": res_emoji, "ग्रुप विश्लेषण": info, "टॉप 10 (Target Group)": t_10})
             
             st.table(pd.DataFrame(day_results))
-            st.success("✅ **रिजल्ट को 80% तक कैसे लाएँ?** यह कोड अब 'हरूफ-क्रॉस' और 'फैमिली' को सबसे ज्यादा पॉइंट्स देता है। 72 में से 6 का फेलियर अब खत्म होगा क्योंकि अब हम केवल वही नंबर चुन रहे हैं जिन पर 3 अलग-अलग पैटर्न्स मुहर लगा रहे हैं।")
+            st.success("✅ **लॉजिक अपडेटेड:** यह कोड अब आपकी थ्योरी पर चल रहा है—'अगर ग्रुप 10 का नंबर आया है, तो उसके बाद कौन सा ग्रुप खुलेगा?'")
             st.balloons()
     except Exception as e:
         st.error(f"Error: {e}")
